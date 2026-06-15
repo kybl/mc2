@@ -895,6 +895,33 @@ edit_show_numbers_cmd (WDialog *h)
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/**
+ * Toggle soft wrapping of long lines in all editor windows.
+ *
+ * @param h root widget for all windows
+ */
+
+void
+edit_toggle_soft_wrap_cmd (WDialog *h)
+{
+    WEdit *edit;
+
+    edit_options.soft_wrap = !edit_options.soft_wrap;
+
+    // realign the focused window: no horizontal scrolling and a valid top offset
+    edit = edit_find_editor (h);
+    if (edit != NULL)
+    {
+        edit->start_col = 0;
+        edit->start_display = edit_buffer_get_bol (&edit->buffer, edit->start_display);
+        edit_scroll_screen_over_cursor (edit);
+        edit->force |= REDRAW_COMPLETELY;
+    }
+
+    widget_draw (WIDGET (h));
+}
+
+/* --------------------------------------------------------------------------------------------- */
 
 void
 edit_save_mode_cmd (void)

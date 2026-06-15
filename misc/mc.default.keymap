@@ -368,6 +368,7 @@ MacroStartStopRecord = ctrl-r
 # MacroDelete =
 ShowNumbers = alt-n
 ShowTabTws = alt-underline
+WrapMode = alt-w
 SyntaxOnOff = ctrl-s
 # SyntaxChoose =
 # ShowMargin =

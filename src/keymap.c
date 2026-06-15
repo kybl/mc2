@@ -502,6 +502,7 @@ static const global_keymap_ini_t default_editor_keymap[] = {
     { "MacroExecute", "ctrl-a" },
     { "ShowNumbers", "alt-n" },
     { "ShowTabTws", "alt-underline" },
+    { "WrapMode", "alt-w" },
     { "SyntaxOnOff", "ctrl-s" },
     { "Find", "alt-enter" },
     { "FilePrev", "alt-minus" },

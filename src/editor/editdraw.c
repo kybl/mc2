@@ -488,11 +488,12 @@ print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long 
 /** b is a pointer to the beginning of the line */
 
 static void
-edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_col)
+edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_col, long line,
+                     gboolean continuation)
 {
     Widget *w = WIDGET (edit);
-    line_s line[MAX_LINE_LEN];
-    line_s *p = line;
+    line_s line_buf[MAX_LINE_LEN];
+    line_s *p = line_buf;
     off_t q;
     int col, start_col_real;
     int abn_style;
@@ -502,9 +503,9 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
     if (row > w->rect.lines - 1 - EDIT_TEXT_VERTICAL_OFFSET - 2 * (edit->fullscreen != 0 ? 0 : 1))
         return;
 
-    if (book_mark_query_color (edit, edit->start_line + row, EDITOR_BOOKMARK_COLOR))
+    if (book_mark_query_color (edit, line, EDITOR_BOOKMARK_COLOR))
         book_mark = EDITOR_BOOKMARK_COLOR;
-    else if (book_mark_query_color (edit, edit->start_line + row, EDITOR_BOOKMARK_FOUND_COLOR))
+    else if (book_mark_query_color (edit, line, EDITOR_BOOKMARK_FOUND_COLOR))
         book_mark = EDITOR_BOOKMARK_FOUND_COLOR;
 
     if (book_mark != 0)
@@ -526,18 +527,16 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
 
     if (edit_options.line_state)
     {
-        long cur_line;
-
-        cur_line = edit->start_line + row;
-        if (cur_line <= edit->buffer.lines)
-            g_snprintf (line_stat, sizeof (line_stat), "%7ld ", cur_line + 1);
+        // continuation rows of a soft-wrapped line have no line number
+        if (line <= edit->buffer.lines && !continuation)
+            g_snprintf (line_stat, sizeof (line_stat), "%7ld ", line + 1);
         else
         {
             memset (line_stat, ' ', LINE_STATE_WIDTH);
             line_stat[LINE_STATE_WIDTH] = '\0';
         }
 
-        if (book_mark_query_color (edit, cur_line, EDITOR_BOOKMARK_COLOR))
+        if (!continuation && book_mark_query_color (edit, line, EDITOR_BOOKMARK_COLOR))
             g_snprintf (line_stat, 2, "*");
     }
 
@@ -549,7 +548,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
 
         eval_marks (edit, &m1, &m2);
 
-        if (row <= edit->buffer.lines - edit->start_line)
+        if (line <= edit->buffer.lines)
         {
             off_t tws = 0;
 
@@ -786,18 +785,19 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
 
     p->ch = 0;
 
-    print_to_widget (edit, row, start_col, start_col_real, end_col, line, line_stat, book_mark);
+    print_to_widget (edit, row, start_col, start_col_real, end_col, line_buf, line_stat, book_mark);
 }
 
 /* --------------------------------------------------------------------------------------------- */
 
 static inline void
-edit_draw_this_char (WEdit *edit, off_t curs, long row, long start_column, long end_column)
+edit_draw_this_char (WEdit *edit, off_t curs, long row, long start_column, long end_column,
+                     long line)
 {
     off_t b;
 
     b = edit_buffer_get_bol (&edit->buffer, curs);
-    edit_draw_this_line (edit, b, row, start_column, end_column);
+    edit_draw_this_line (edit, b, row, start_column, end_column, line, FALSE);
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -816,6 +816,11 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
     int force = edit->force;
     int y1, x1, y2, x2;
     int last_line, last_column;
+
+    // soft wrap decouples screen rows from buffer lines, so the partial
+    // (cursor-only) redraw optimizations cannot be used
+    if (edit_wrap_width (edit) > 0)
+        force |= REDRAW_PAGE;
 
     // draw only visible region
 
@@ -870,13 +875,50 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
 
         if ((force & REDRAW_PAGE) != 0)
         {
-            b = edit_buffer_get_forward_offset (&edit->buffer, edit->start_display, start_row, 0);
-            for (row = start_row; row <= end_row; row++)
+            long width = edit_wrap_width (edit);
+
+            if (width > 0)
             {
-                if (key_pending (edit))
-                    return;
-                edit_draw_this_line (edit, b, row, start_column, end_column);
-                b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
+                long cur_line = edit->start_line;
+                gboolean continuation;
+
+                b = edit->start_display;
+                continuation = (b != edit_buffer_get_bol (&edit->buffer, b));
+                for (row = 0; row < start_row; row++)
+                {
+                    gboolean nl;
+
+                    b = edit_wrap_next_row (edit, b, width, &nl);
+                    if (nl)
+                        cur_line++;
+                    continuation = !nl;
+                }
+                for (row = start_row; row <= end_row; row++)
+                {
+                    gboolean nl;
+
+                    if (key_pending (edit))
+                        return;
+                    edit_draw_this_line (edit, b, row, start_column, end_column, cur_line,
+                                         continuation);
+                    b = edit_wrap_next_row (edit, b, width, &nl);
+                    if (nl)
+                        cur_line++;
+                    continuation = !nl;
+                }
+            }
+            else
+            {
+                b = edit_buffer_get_forward_offset (&edit->buffer, edit->start_display, start_row,
+                                                    0);
+                for (row = start_row; row <= end_row; row++)
+                {
+                    if (key_pending (edit))
+                        return;
+                    edit_draw_this_line (edit, b, row, start_column, end_column,
+                                         edit->start_line + row, FALSE);
+                    b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
+                }
             }
         }
         else
@@ -893,7 +935,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, row, start_column, end_column,
+                                         edit->start_line + row, FALSE);
                     b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
                 }
             }
@@ -904,7 +947,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
             {
                 if (key_pending (edit))
                     return;
-                edit_draw_this_line (edit, b, curs_row, start_column, end_column);
+                edit_draw_this_line (edit, b, curs_row, start_column, end_column,
+                                     edit->buffer.curs_line, FALSE);
             }
 
             if ((force & REDRAW_AFTER_CURSOR) != 0 && end_row > curs_row)
@@ -914,7 +958,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, row, start_column, end_column,
+                                         edit->start_line + row, FALSE);
                     b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
                 }
             }
@@ -928,7 +973,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, row, start_column, end_column,
+                                         edit->start_line + row, FALSE);
                 }
             }
 
@@ -941,7 +987,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, row, start_column, end_column,
+                                         edit->start_line + row, FALSE);
                 }
             }
         }
@@ -949,13 +996,17 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
     else if (prev_curs_row < edit->curs_row)
     {
         // with the new text highlighting, we must draw from the top down
-        edit_draw_this_char (edit, prev_curs, prev_curs_row, start_column, end_column);
-        edit_draw_this_char (edit, edit->buffer.curs1, edit->curs_row, start_column, end_column);
+        edit_draw_this_char (edit, prev_curs, prev_curs_row, start_column, end_column,
+                             edit->start_line + prev_curs_row);
+        edit_draw_this_char (edit, edit->buffer.curs1, edit->curs_row, start_column, end_column,
+                             edit->buffer.curs_line);
     }
     else
     {
-        edit_draw_this_char (edit, edit->buffer.curs1, edit->curs_row, start_column, end_column);
-        edit_draw_this_char (edit, prev_curs, prev_curs_row, start_column, end_column);
+        edit_draw_this_char (edit, edit->buffer.curs1, edit->curs_row, start_column, end_column,
+                             edit->buffer.curs_line);
+        edit_draw_this_char (edit, prev_curs, prev_curs_row, start_column, end_column,
+                             edit->start_line + prev_curs_row);
     }
 
     edit->force = 0;
@@ -1059,14 +1110,18 @@ edit_scroll_screen_over_cursor (WEdit *edit)
         l_extreme = (l_extreme * (w->cols - 1)) / n;
         r_extreme = (r_extreme * (w->cols - 1)) / n;
     }
-    p = edit_get_col (edit) + edit->over_col;
+    // soft wrap keeps every line within the screen width: no horizontal scrolling
+    if (edit_wrap_width (edit) <= 0)
+    {
+        p = edit_get_col (edit) + edit->over_col;
+        outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
+        if (outby > 0)
+            edit_scroll_right (edit, outby);
+        outby = l_extreme - p - edit->start_col;
+        if (outby > 0)
+            edit_scroll_left (edit, outby);
+    }
     edit_update_curs_row (edit);
-    outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
-    if (outby > 0)
-        edit_scroll_right (edit, outby);
-    outby = l_extreme - p - edit->start_col;
-    if (outby > 0)
-        edit_scroll_left (edit, outby);
     p = edit->curs_row;
     outby = p - w->lines + 1 + b_extreme;
     if (outby > 0)

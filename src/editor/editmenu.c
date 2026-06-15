@@ -155,6 +155,7 @@ create_command_menu (void)
     entries = g_list_prepend (entries,
                               menu_entry_new (_ ("Toggle s&yntax highlighting"), CK_SyntaxOnOff));
     entries = g_list_prepend (entries, menu_entry_new (_ ("Togg&le right margin"), CK_ShowMargin));
+    entries = g_list_prepend (entries, menu_entry_new (_ ("Toggle soft &wrap"), CK_WrapMode));
     entries = g_list_prepend (entries, menu_separator_new ());
     entries = g_list_prepend (entries, menu_entry_new (_ ("&Find declaration"), CK_Find));
     entries = g_list_prepend (entries, menu_entry_new (_ ("Back from &declaration"), CK_FilePrev));

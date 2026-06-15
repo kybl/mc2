@@ -385,7 +385,7 @@ editcmd_dialog_select_definition_show (WEdit *edit, char *match_expr, GPtrArray 
                 vpath = vfs_path_clone (edit->filename_vpath);
 
             edit_arg_assign (&edit_history_moveto[edit_stack_iterator], vpath,
-                             edit->start_line + edit->curs_row + 1);
+                             edit->buffer.curs_line + 1);
             edit_stack_iterator++;
             edit_arg_assign (&edit_history_moveto[edit_stack_iterator],
                              vfs_path_from_str ((char *) curr_def->fullpath), curr_def->line);

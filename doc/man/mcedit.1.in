@@ -576,6 +576,10 @@ as '.'
 .I editor_visible_tabs
 Toggle "show visible tabs".  If editor_visible_tabs=1, tabs are shown as '<\-\-\-\->'
 .TP
+.I editor_soft_wrap
+Toggle "soft wrap".  If editor_soft_wrap=1, long lines are wrapped to fit them
+on the screen instead of being scrolled horizontally. M\-w toggles this option.
+.TP
 .I editor_persistent_selections
 Do not remove block selection after cursor movement.
 .TP

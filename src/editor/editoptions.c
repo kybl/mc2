@@ -114,6 +114,31 @@ edit_reload_syntax (void *data, void *user_data)
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/**
+ * Callback for the iteration of objects in the 'editors' array.
+ * Realign all editors after the soft wrap option has been toggled.
+ *
+ * @param data      probably WEdit object
+ * @param user_data unused
+ */
+
+static void
+edit_reset_soft_wrap (void *data, void *user_data)
+{
+    (void) user_data;
+
+    if (edit_widget_is_editor (CONST_WIDGET (data)))
+    {
+        WEdit *edit = EDIT (data);
+
+        edit->start_col = 0;
+        edit->start_display = edit_buffer_get_bol (&edit->buffer, edit->start_display);
+        edit_scroll_screen_over_cursor (edit);
+        edit->force |= REDRAW_COMPLETELY;
+    }
+}
+
+/* --------------------------------------------------------------------------------------------- */
 /*** public functions ****************************************************************************/
 /* --------------------------------------------------------------------------------------------- */
 
@@ -124,6 +149,7 @@ edit_options_dialog (WDialog *h)
     char *p, *q;
     int wrap_mode = 0;
     gboolean old_syntax_hl;
+    gboolean old_soft_wrap;
 
 #ifdef ENABLE_NLS
     static gboolean i18n_flag = FALSE;
@@ -134,6 +160,8 @@ edit_options_dialog (WDialog *h)
         i18n_flag = TRUE;
     }
 #endif
+
+    old_soft_wrap = edit_options.soft_wrap;
 
     g_snprintf (wrap_length, sizeof (wrap_length), "%d", edit_options.word_wrap_line_length);
     g_snprintf (tab_spacing, sizeof (tab_spacing), "%d", TAB_SIZE);
@@ -181,6 +209,7 @@ edit_options_dialog (WDialog *h)
                                     &edit_options.persistent_selections, NULL),
                     QUICK_CHECKBOX (_ ("Cursor be&yond end of line"),
                                     &edit_options.cursor_beyond_eol, NULL),
+                    QUICK_CHECKBOX (_ ("Soft &wrap"), &edit_options.soft_wrap, NULL),
                     QUICK_CHECKBOX (_ ("&Group undo"), &edit_options.group_undo, NULL),
                     QUICK_LABELED_INPUT (_ ("Word wrap line length:"), input_label_left, wrap_length,
                                          "edit-word-wrap", &p, NULL, FALSE, FALSE, INPUT_COMPLETE_NONE),
@@ -246,6 +275,10 @@ edit_options_dialog (WDialog *h)
     // Load or unload syntax rules if the option has changed
     if (edit_options.syntax_highlighting != old_syntax_hl)
         g_list_foreach (GROUP (h)->widgets, edit_reload_syntax, NULL);
+
+    // Realign all editors if soft wrap has been toggled
+    if (edit_options.soft_wrap != old_soft_wrap)
+        g_list_foreach (GROUP (h)->widgets, edit_reset_soft_wrap, NULL);
 }
 
 /* --------------------------------------------------------------------------------------------- */

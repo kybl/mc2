@@ -463,6 +463,9 @@ edit_dialog_command_execute (WDialog *h, long command)
     case CK_ShowNumbers:
         edit_show_numbers_cmd (h);
         break;
+    case CK_WrapMode:
+        edit_toggle_soft_wrap_cmd (h);
+        break;
     case CK_Refresh:
         edit_refresh_cmd ();
         break;
@@ -735,7 +738,17 @@ edit_update_cursor (WEdit *edit, const mouse_event_t *event)
     else if (y < edit->curs_row)
         edit_move_up (edit, edit->curs_row - y, FALSE);
     else
-        edit_move_to_prev_col (edit, edit_buffer_get_current_bol (&edit->buffer));
+    {
+        off_t bol;
+        long width;
+
+        bol = edit_buffer_get_current_bol (&edit->buffer);
+        width = edit_wrap_width (edit);
+        if (width > 0)
+            // position within the clicked screen row, not the whole buffer line
+            bol = edit_wrap_bol (edit, edit->buffer.curs1, width);
+        edit_move_to_prev_col (edit, bol);
+    }
 
     if (event->msg == MSG_MOUSE_CLICK)
     {

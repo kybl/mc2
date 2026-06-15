@@ -100,6 +100,7 @@ edit_options_t edit_options = {
     .visible_tabs = TRUE,
     .visible_tws = TRUE,
     .show_right_margin = FALSE,
+    .soft_wrap = FALSE,
     .simple_statusbar = FALSE,
     .check_nl_at_eof = FALSE,
 };
@@ -122,6 +123,11 @@ const char VERTICAL_MAGIC[] = { '\1', '\1', '\1', '\1', '\n' };
 /*** file scope type declarations ****************************************************************/
 
 /*** forward declarations (file scope functions) *************************************************/
+
+static long edit_wrap_line_height (const WEdit *edit, off_t bol, long width);
+static off_t edit_wrap_prev_row (const WEdit *edit, off_t cur, long width, gboolean *new_line);
+static off_t edit_wrap_max_start (const WEdit *edit, long width);
+static void edit_move_to_buffer_line (WEdit *edit, long line);
 
 /*** file scope variables ************************************************************************/
 
@@ -769,7 +775,10 @@ edit_move_up_paragraph (WEdit *edit, gboolean do_scroll)
         }
     }
 
-    edit_move_up (edit, edit->buffer.curs_line - i, do_scroll);
+    if (edit_wrap_width (edit) > 0)
+        edit_move_to_buffer_line (edit, i);
+    else
+        edit_move_up (edit, edit->buffer.curs_line - i, do_scroll);
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -804,7 +813,11 @@ edit_move_down_paragraph (WEdit *edit, gboolean do_scroll)
             if (edit_line_is_blank (edit, i) || i >= edit->buffer.lines)
                 break;
     }
-    edit_move_down (edit, i - edit->buffer.curs_line, do_scroll);
+
+    if (edit_wrap_width (edit) > 0)
+        edit_move_to_buffer_line (edit, i);
+    else
+        edit_move_down (edit, i - edit->buffer.curs_line, do_scroll);
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -1067,7 +1080,69 @@ static void
 edit_move_updown (WEdit *edit, long lines, gboolean do_scroll, gboolean direction)
 {
     long p;
-    long l = direction ? edit->buffer.curs_line : edit->buffer.lines - edit->buffer.curs_line;
+    long width;
+    long l;
+
+    width = edit_wrap_width (edit);
+    if (width > 0)
+    {
+        off_t target;
+        long moved = 0;
+        long goal_vcol, row_cols, place_col;
+
+        if (lines <= 0)
+            return;
+
+        if (lines > 1)
+            edit->force |= REDRAW_PAGE;
+        if (do_scroll)
+        {
+            if (direction)
+                edit_scroll_upward (edit, lines);
+            else
+                edit_scroll_downward (edit, lines);
+        }
+
+        // the column within the screen row we are trying to keep
+        goal_vcol = edit->prev_col % width;
+
+        target = edit_wrap_bol (edit, edit->buffer.curs1, width);
+        while (moved < lines)
+        {
+            off_t q;
+
+            q = direction ? edit_wrap_prev_row (edit, target, width, NULL)
+                          : edit_wrap_next_row (edit, target, width, NULL);
+            if (q == target)
+                break;
+            target = q;
+            moved++;
+        }
+
+        if (moved != 0)
+        {
+            row_cols = (long) edit_move_forward3 (edit, target, 0,
+                                                  edit_buffer_get_eol (&edit->buffer, target));
+            place_col = MIN (goal_vcol, MIN (row_cols, width));
+            p = edit_move_forward3 (edit, target, place_col, 0);
+            edit_cursor_move (edit, p - edit->buffer.curs1);
+            edit->over_col = 0;
+
+            // search start of current multibyte char (like CJK)
+            if (edit->buffer.curs1 > 0 && edit->buffer.curs1 + 1 < edit->buffer.size
+                && edit_buffer_get_current_byte (&edit->buffer) >= 256)
+            {
+                edit_right_char_move_cmd (edit);
+                edit_left_char_move_cmd (edit);
+            }
+        }
+
+        edit->search_start = edit->buffer.curs1;
+        edit->found_len = 0;
+        return;
+    }
+
+    l = direction ? edit->buffer.curs_line : edit->buffer.lines - edit->buffer.curs_line;
 
     if (lines > l)
         lines = l;
@@ -2855,13 +2930,185 @@ edit_get_col (const WEdit *edit)
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/* Soft wrap helpers                                                                              */
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Get the width (in screen columns) used to soft-wrap long lines.
+ *
+ * @param edit editor object
+ * @return the wrap width when soft wrap is enabled, 0 otherwise
+ */
+
+long
+edit_wrap_width (const WEdit *edit)
+{
+    long width;
+
+    if (!edit_options.soft_wrap)
+        return 0;
+
+    width = CONST_WIDGET (edit)->rect.cols - edit_options.line_state_width;
+    if (edit->fullscreen == 0)
+        width -= 2;  // left and right window frame
+
+    return width > 0 ? width : 1;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** Number of screen rows occupied by the buffer line that starts at offset bol. */
+
+static long
+edit_wrap_line_height (const WEdit *edit, off_t bol, long width)
+{
+    long cols;
+
+    cols = (long) edit_move_forward3 (edit, bol, 0, edit_buffer_get_eol (&edit->buffer, bol));
+    return cols <= 0 ? 1 : (cols - 1) / width + 1;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Get the offset of the screen row that contains offset q.
+ *
+ * @param edit  editor object
+ * @param q     byte offset
+ * @param width wrap width, must be > 0
+ * @return offset of the beginning of the screen row
+ */
+
+off_t
+edit_wrap_bol (const WEdit *edit, off_t q, long width)
+{
+    off_t bol;
+    long col, cols, seg, max_seg;
+
+    bol = edit_buffer_get_bol (&edit->buffer, q);
+    col = (long) edit_move_forward3 (edit, bol, 0, q);
+    if (col < width)
+        return bol;
+
+    cols = (long) edit_move_forward3 (edit, bol, 0, edit_buffer_get_eol (&edit->buffer, bol));
+    seg = col / width;
+    max_seg = cols <= 0 ? 0 : (cols - 1) / width;
+    if (seg > max_seg)
+        seg = max_seg;
+    return seg == 0 ? bol : edit_move_forward3 (edit, bol, seg * width, 0);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Get the offset of the screen row following the one that starts at cur.
+ *
+ * @param edit     editor object
+ * @param cur      offset of the beginning of a screen row
+ * @param width    wrap width, must be > 0
+ * @param new_line if not NULL, set to TRUE when the next row starts a new buffer line
+ * @return offset of the beginning of the next screen row
+ */
+
+off_t
+edit_wrap_next_row (const WEdit *edit, off_t cur, long width, gboolean *new_line)
+{
+    off_t eol;
+
+    eol = edit_buffer_get_eol (&edit->buffer, cur);
+    if ((long) edit_move_forward3 (edit, cur, 0, eol) <= width)
+    {
+        // the rest of the buffer line fits on this screen row
+        if (new_line != NULL)
+            *new_line = TRUE;
+        return edit_buffer_get_forward_offset (&edit->buffer, cur, 1, 0);
+    }
+
+    // wrap inside the buffer line
+    if (new_line != NULL)
+        *new_line = FALSE;
+    return edit_move_forward3 (edit, cur, width, 0);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** Get the offset of the screen row preceding the one that starts at cur. */
+
+static off_t
+edit_wrap_prev_row (const WEdit *edit, off_t cur, long width, gboolean *new_line)
+{
+    off_t bol;
+    long h;
+
+    if (new_line != NULL)
+        *new_line = FALSE;
+
+    if (cur <= 0)
+        return 0;
+
+    bol = edit_buffer_get_bol (&edit->buffer, cur);
+    if (cur > bol)
+    {
+        // the previous screen row belongs to the same buffer line
+        long seg;
+
+        seg = (long) edit_move_forward3 (edit, bol, 0, cur) / width;
+        if (seg != 0)
+            seg--;
+        return edit_move_forward3 (edit, bol, seg * width, 0);
+    }
+
+    // the previous screen row is the last row of the previous buffer line
+    if (new_line != NULL)
+        *new_line = TRUE;
+    bol = edit_buffer_get_backward_offset (&edit->buffer, cur, 1);
+    h = edit_wrap_line_height (edit, bol, width);
+    return h <= 1 ? bol : edit_move_forward3 (edit, bol, (h - 1) * width, 0);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** Maximum value of start_display so that the last screen row still shows text. */
+
+static off_t
+edit_wrap_max_start (const WEdit *edit, long width)
+{
+    off_t v;
+    long visible, k;
+
+    visible = CONST_WIDGET (edit)->rect.lines - 1;
+    if (visible < 1)
+        visible = 1;
+
+    v = edit_wrap_bol (edit, edit->buffer.size, width);
+    for (k = 1; k < visible; k++)
+    {
+        off_t prev;
+
+        prev = edit_wrap_prev_row (edit, v, width, NULL);
+        if (prev == v)
+            break;
+        v = prev;
+    }
+    return v;
+}
+
+/* --------------------------------------------------------------------------------------------- */
 /* Scrolling functions */
 /* --------------------------------------------------------------------------------------------- */
 
 void
 edit_update_curs_row (WEdit *edit)
 {
-    edit->curs_row = edit->buffer.curs_line - edit->start_line;
+    long width;
+
+    width = edit_wrap_width (edit);
+    if (width <= 0)
+        edit->curs_row = edit->buffer.curs_line - edit->start_line;
+    else
+    {
+        off_t cur_bol, p;
+        long row = 0;
+
+        cur_bol = edit_wrap_bol (edit, edit->buffer.curs1, width);
+        for (p = edit->start_display; p < cur_bol; row++)
+            p = edit_wrap_next_row (edit, p, width, NULL);
+        edit->curs_row = row;
+    }
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -2870,9 +3117,20 @@ void
 edit_update_curs_col (WEdit *edit)
 {
     off_t b;
+    long width;
 
     b = edit_buffer_get_current_bol (&edit->buffer);
     edit->curs_col = (long) edit_move_forward3 (edit, b, 0, edit->buffer.curs1);
+
+    width = edit_wrap_width (edit);
+    if (width > 0)
+    {
+        // make the column relative to the beginning of the current screen row
+        off_t vbol;
+
+        vbol = edit_wrap_bol (edit, edit->buffer.curs1, width);
+        edit->curs_col -= (long) edit_move_forward3 (edit, b, 0, vbol);
+    }
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -2889,7 +3147,34 @@ edit_get_curs_col (const WEdit *edit)
 void
 edit_scroll_upward (WEdit *edit, long i)
 {
+    long width;
     long lines_above = edit->start_line;
+
+    width = edit_wrap_width (edit);
+    if (width > 0)
+    {
+        long k;
+
+        for (k = 0; k < i && edit->start_display != 0; k++)
+        {
+            gboolean new_line;
+            off_t prev;
+
+            prev = edit_wrap_prev_row (edit, edit->start_display, width, &new_line);
+            if (prev == edit->start_display)
+                break;
+            if (new_line)
+                edit->start_line--;
+            edit->start_display = prev;
+        }
+        if (k != 0)
+        {
+            edit->force |= REDRAW_PAGE;
+            edit->force &= (0xfff - REDRAW_CHAR_ONLY);
+        }
+        edit_update_curs_row (edit);
+        return;
+    }
 
     if (i > lines_above)
         i = lines_above;
@@ -2909,7 +3194,36 @@ edit_scroll_upward (WEdit *edit, long i)
 void
 edit_scroll_downward (WEdit *edit, long i)
 {
+    long width;
     long lines_below;
+
+    width = edit_wrap_width (edit);
+    if (width > 0)
+    {
+        off_t max_start;
+        long k;
+
+        max_start = edit_wrap_max_start (edit, width);
+        for (k = 0; k < i && edit->start_display < max_start; k++)
+        {
+            gboolean new_line;
+            off_t next;
+
+            next = edit_wrap_next_row (edit, edit->start_display, width, &new_line);
+            if (next == edit->start_display)
+                break;
+            if (new_line)
+                edit->start_line++;
+            edit->start_display = next;
+        }
+        if (k != 0)
+        {
+            edit->force |= REDRAW_PAGE;
+            edit->force &= (0xfff - REDRAW_CHAR_ONLY);
+        }
+        edit_update_curs_row (edit);
+        return;
+    }
 
     lines_below = edit->buffer.lines - edit->start_line - (WIDGET (edit)->rect.lines - 1);
     if (lines_below > 0)
@@ -3030,12 +3344,33 @@ edit_line_is_blank (WEdit *edit, long line)
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/** move cursor to buffer line 'line', keeping the column, without scrolling by screen rows */
+
+static void
+edit_move_to_buffer_line (WEdit *edit, long line)
+{
+    off_t bol, p;
+
+    bol = edit_buffer_get_current_bol (&edit->buffer);
+    if (line < edit->buffer.curs_line)
+        p = edit_buffer_get_backward_offset (&edit->buffer, bol, edit->buffer.curs_line - line);
+    else
+        p = edit_buffer_get_forward_offset (&edit->buffer, bol, line - edit->buffer.curs_line, 0);
+
+    edit_cursor_move (edit, p - edit->buffer.curs1);
+    edit_move_to_prev_col (edit, p);
+    edit->force |= REDRAW_PAGE;
+}
+
+/* --------------------------------------------------------------------------------------------- */
 /** move cursor to line 'line' */
 
 void
 edit_move_to_line (WEdit *e, long line)
 {
-    if (line < e->buffer.curs_line)
+    if (edit_wrap_width (e) > 0)
+        edit_move_to_buffer_line (e, line);
+    else if (line < e->buffer.curs_line)
         edit_move_up (e, e->buffer.curs_line - line, FALSE);
     else
         edit_move_down (e, line - e->buffer.curs_line, FALSE);
@@ -3048,7 +3383,19 @@ edit_move_to_line (WEdit *e, long line)
 void
 edit_move_display (WEdit *e, long line)
 {
-    if (line < e->start_line)
+    if (edit_wrap_width (e) > 0)
+    {
+        // align the top of the screen with the beginning of the given buffer line
+        if (line < 0)
+            line = 0;
+        else if (line > e->buffer.lines)
+            line = e->buffer.lines;
+        e->start_line = line;
+        e->start_display = edit_find_line (e, line);
+        e->force |= REDRAW_PAGE;
+        edit_update_curs_row (e);
+    }
+    else if (line < e->start_line)
         edit_scroll_upward (e, e->start_line - line);
     else
         edit_scroll_downward (e, line - e->start_line);
