@@ -1071,15 +1071,24 @@ edit_scroll_screen_over_cursor (WEdit *edit)
     long p;
     long outby;
     int b_extreme, t_extreme, l_extreme, r_extreme;
+    int dcols, dframe;
 
     if (w->lines <= 0 || w->cols <= 0)
         return;
 
-    rect_resize (w, -EDIT_TEXT_VERTICAL_OFFSET,
-                 -(EDIT_TEXT_HORIZONTAL_OFFSET + edit_options.line_state_width));
+    /*
+     * Shrink the rectangle to the text area so the helpers below see the text
+     * size.  In soft wrap mode horizontal scrolling is disabled and
+     * edit_wrap_width() must keep seeing the full widget width, so the columns
+     * are not shrunk in that case.
+     */
+    dcols = edit_wrap_width (edit) > 0 ? 0 : EDIT_TEXT_HORIZONTAL_OFFSET + edit_options.line_state_width;
+    dframe = edit_wrap_width (edit) > 0 ? 0 : 1;
+
+    rect_resize (w, -EDIT_TEXT_VERTICAL_OFFSET, -dcols);
 
     if (edit->fullscreen == 0)
-        rect_grow (w, -1, -1);
+        rect_grow (w, -1, -dframe);
 
     r_extreme = EDIT_RIGHT_EXTREME;
     l_extreme = EDIT_LEFT_EXTREME;
@@ -1131,10 +1140,9 @@ edit_scroll_screen_over_cursor (WEdit *edit)
         edit_scroll_upward (edit, outby);
     edit_update_curs_row (edit);
 
-    rect_resize (w, EDIT_TEXT_VERTICAL_OFFSET,
-                 EDIT_TEXT_HORIZONTAL_OFFSET + edit_options.line_state_width);
+    rect_resize (w, EDIT_TEXT_VERTICAL_OFFSET, dcols);
     if (edit->fullscreen == 0)
-        rect_grow (w, 1, 1);
+        rect_grow (w, 1, dframe);
 }
 
 /* --------------------------------------------------------------------------------------------- */
