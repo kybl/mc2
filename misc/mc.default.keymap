@@ -371,6 +371,7 @@ ShowTabTws = alt-underline
 SyntaxOnOff = ctrl-s
 # SyntaxChoose =
 # ShowMargin =
+WrapMode = alt-w
 Find = alt-enter
 FilePrev = alt-minus
 FileNext = alt-plus

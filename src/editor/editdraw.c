@@ -52,6 +52,7 @@
 
 #include "edit-impl.h"
 #include "editwidget.h"
+#include "editwrap.h"
 
 /*** global variables ****************************************************************************/
 
@@ -374,7 +375,7 @@ edit_draw_window_icons (const WEdit *edit, int color)
 /* --------------------------------------------------------------------------------------------- */
 
 static inline void
-print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long end_col,
+print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long end_col, long scol,
                  line_s line[], char *status, int bookmarked)
 {
     Widget *w = WIDGET (edit);
@@ -399,7 +400,7 @@ print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long 
         tty_setcolor (bookmarked);
 
     len = end_col + 1 - start_col;
-    wrap_start = edit_options.word_wrap_line_length + edit->start_col;
+    wrap_start = edit_options.word_wrap_line_length + scol;
 
     if (len > 0 && w->rect.y + y >= 0)
     {
@@ -475,7 +476,7 @@ print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long 
 
         if (edit_options.show_right_margin)
         {
-            if (i > edit_options.word_wrap_line_length + edit->start_col)
+            if (i > edit_options.word_wrap_line_length + scol)
                 tty_setcolor (EDITOR_RIGHT_MARGIN_COLOR);
             i++;
         }
@@ -485,26 +486,40 @@ print_to_widget (WEdit *edit, long row, int start_col, int start_col_real, long 
 }
 
 /* --------------------------------------------------------------------------------------------- */
-/** b is a pointer to the beginning of the line */
+/**
+ * Draw one screen row of the text.
+ *
+ * @param edit      editor object
+ * @param b         offset of the beginning of the logical line
+ * @param line      number of the logical line
+ * @param row       screen row
+ * @param start_col first screen column to draw
+ * @param end_col   last screen column to draw
+ * @param seg       segment of the line to draw (soft wrap mode) or NULL to draw the line
+ *                  according to the horizontal scroll position
+ */
 
 static void
-edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_col)
+edit_draw_this_line (WEdit *edit, off_t b, long line, long row, long start_col, long end_col,
+                     const edit_wrap_seg_t *seg)
 {
     Widget *w = WIDGET (edit);
-    line_s line[MAX_LINE_LEN];
-    line_s *p = line;
+    line_s line_buf[MAX_LINE_LEN];
+    line_s *p = line_buf;
     off_t q;
     int col, start_col_real;
     int abn_style;
     int book_mark = 0;
     char line_stat[LINE_STATE_WIDTH + 1] = "\0";
+    // horizontal offset of the drawn text: scroll position or the wrapped segment start
+    long scol;
 
     if (row > w->rect.lines - 1 - EDIT_TEXT_VERTICAL_OFFSET - 2 * (edit->fullscreen != 0 ? 0 : 1))
         return;
 
-    if (book_mark_query_color (edit, edit->start_line + row, EDITOR_BOOKMARK_COLOR))
+    if (book_mark_query_color (edit, line, EDITOR_BOOKMARK_COLOR))
         book_mark = EDITOR_BOOKMARK_COLOR;
-    else if (book_mark_query_color (edit, edit->start_line + row, EDITOR_BOOKMARK_FOUND_COLOR))
+    else if (book_mark_query_color (edit, line, EDITOR_BOOKMARK_FOUND_COLOR))
         book_mark = EDITOR_BOOKMARK_FOUND_COLOR;
 
     if (book_mark != 0)
@@ -520,28 +535,38 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
             end_col--;
     }
 
-    q = edit_move_forward3 (edit, b, start_col - edit->start_col, 0);
-    col = (int) edit_move_forward3 (edit, b, 0, q);
-    start_col_real = col + edit->start_col;
+    if (seg == NULL)
+    {
+        scol = edit->start_col;
+        q = edit_move_forward3 (edit, b, start_col - scol, 0);
+        col = (int) edit_move_forward3 (edit, b, 0, q);
+    }
+    else
+    {
+        scol = -seg->col;
+        q = seg->start;
+        col = (int) seg->col;
+        // never draw more than the segment width: the rest belongs to the next row
+        end_col = MIN (end_col, edit_wrap_width (edit) - 1);
+    }
+    start_col_real = col + scol;
 
     if (edit_options.line_state)
     {
-        long cur_line;
-
-        cur_line = edit->start_line + row;
-        if (cur_line <= edit->buffer.lines)
-            g_snprintf (line_stat, sizeof (line_stat), "%7ld ", cur_line + 1);
+        if (line <= edit->buffer.lines && (seg == NULL || seg->start == b))
+            g_snprintf (line_stat, sizeof (line_stat), "%7ld ", line + 1);
         else
         {
             memset (line_stat, ' ', LINE_STATE_WIDTH);
             line_stat[LINE_STATE_WIDTH] = '\0';
         }
 
-        if (book_mark_query_color (edit, cur_line, EDITOR_BOOKMARK_COLOR))
+        if ((seg == NULL || seg->start == b)
+            && book_mark_query_color (edit, line, EDITOR_BOOKMARK_COLOR))
             g_snprintf (line_stat, 2, "*");
     }
 
-    if (col <= -(edit->start_col + 16))
+    if (col <= -(scol + 16))
         start_col_real = start_col = 0;
     else
     {
@@ -549,7 +574,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
 
         eval_marks (edit, &m1, &m2);
 
-        if (row <= edit->buffer.lines - edit->start_line)
+        if (line <= edit->buffer.lines)
         {
             off_t tws = 0;
 
@@ -563,7 +588,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
                         break;
                 }
 
-            while (col <= end_col - edit->start_col)
+            while (col <= end_col - scol)
             {
                 int char_length = 1;
                 unsigned int c;
@@ -617,7 +642,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
                 switch (c)
                 {
                 case '\n':
-                    col = end_col - edit->start_col + 1;  // quit
+                    col = end_col - scol + 1;  // quit
                     break;
 
                 case '\t':
@@ -626,7 +651,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
                     int i;
 
                     i = TAB_SIZE - ((int) col % TAB_SIZE);
-                    tab_over = (end_col - edit->start_col) - (col + i - 1);
+                    tab_over = (end_col - scol) - (col + i - 1);
                     if (tab_over < 0)
                         i += tab_over;
                     col += i;
@@ -767,7 +792,7 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
                 if (char_length > 1)
                     q += char_length - 1;
 
-                if (col > (end_col - edit->start_col + 1))
+                if (col > (end_col - scol + 1))
                 {
                     if (wide_width_char)
                     {
@@ -786,7 +811,8 @@ edit_draw_this_line (WEdit *edit, off_t b, long row, long start_col, long end_co
 
     p->ch = 0;
 
-    print_to_widget (edit, row, start_col, start_col_real, end_col, line, line_stat, book_mark);
+    print_to_widget (edit, row, start_col, start_col_real, end_col, scol, line_buf, line_stat,
+                     book_mark);
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -795,9 +821,71 @@ static inline void
 edit_draw_this_char (WEdit *edit, off_t curs, long row, long start_column, long end_column)
 {
     off_t b;
+    long line;
 
     b = edit_buffer_get_bol (&edit->buffer, curs);
-    edit_draw_this_line (edit, b, row, start_column, end_column);
+
+    if (!edit_wrap_is_enabled (edit))
+        edit_draw_this_line (edit, b, edit->start_line + row, row, start_column, end_column, NULL);
+    else
+    {
+        edit_wrap_seg_t seg;
+
+        // the row does not give the line number in soft wrap mode
+        if (curs <= edit->buffer.curs1)
+            line = edit->buffer.curs_line
+                - edit_buffer_count_lines (&edit->buffer, curs, edit->buffer.curs1);
+        else
+            line = edit->buffer.curs_line
+                + edit_buffer_count_lines (&edit->buffer, edit->buffer.curs1, curs);
+
+        edit_wrap_locate (edit, b, curs, &seg, NULL);
+        edit_draw_this_line (edit, b, line, row, start_column, end_column, &seg);
+    }
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Draw screen rows in soft wrap mode.
+ *
+ * @param edit         editor object
+ * @param start_row    first row to draw
+ * @param start_column first column to draw
+ * @param end_row      last row to draw
+ * @param end_column   last column to draw
+ *
+ * @return FALSE if drawing was interrupted by a pending key, TRUE otherwise
+ */
+
+static gboolean
+edit_draw_wrapped_rows (WEdit *edit, long start_row, long start_column, long end_row,
+                        long end_column)
+{
+    edit_wrap_seg_t seg;
+    off_t b = edit->start_display;
+    long line = edit->start_line;
+    long row;
+
+    edit_wrap_clamp_start (edit);
+    edit_wrap_get_segment (edit, b, 0, edit_wrap_width (edit), &seg);
+
+    // skip hidden rows of the top line and rows above start_row
+    for (row = 0; row < edit->start_wrap_row + start_row; row++)
+        if (!edit_wrap_next_segment (edit, edit_wrap_width (edit), &seg))
+            edit_wrap_next_line (edit, &b, &line, &seg);
+
+    for (row = start_row; row <= end_row; row++)
+    {
+        if (key_pending (edit))
+            return FALSE;
+
+        edit_draw_this_line (edit, b, line, row, start_column, end_column, &seg);
+
+        if (!edit_wrap_next_segment (edit, edit_wrap_width (edit), &seg))
+            edit_wrap_next_line (edit, &b, &line, &seg);
+    }
+
+    return TRUE;
 }
 
 /* --------------------------------------------------------------------------------------------- */
@@ -868,14 +956,22 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
         long row = 0;
         long b;
 
-        if ((force & REDRAW_PAGE) != 0)
+        if (edit_wrap_is_enabled (edit))
+        {
+            /* In soft wrap mode any change of a line may change the number of its rows
+             * and shift all the rows below, so redraw the whole page. */
+            if (!edit_draw_wrapped_rows (edit, start_row, start_column, end_row, end_column))
+                return;
+        }
+        else if ((force & REDRAW_PAGE) != 0)
         {
             b = edit_buffer_get_forward_offset (&edit->buffer, edit->start_display, start_row, 0);
             for (row = start_row; row <= end_row; row++)
             {
                 if (key_pending (edit))
                     return;
-                edit_draw_this_line (edit, b, row, start_column, end_column);
+                edit_draw_this_line (edit, b, edit->start_line + row, row, start_column, end_column,
+                                     NULL);
                 b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
             }
         }
@@ -893,7 +989,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, edit->start_line + row, row, start_column,
+                                         end_column, NULL);
                     b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
                 }
             }
@@ -904,7 +1001,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
             {
                 if (key_pending (edit))
                     return;
-                edit_draw_this_line (edit, b, curs_row, start_column, end_column);
+                edit_draw_this_line (edit, b, edit->start_line + curs_row, curs_row, start_column,
+                                     end_column, NULL);
             }
 
             if ((force & REDRAW_AFTER_CURSOR) != 0 && end_row > curs_row)
@@ -914,7 +1012,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, edit->start_line + row, row, start_column,
+                                         end_column, NULL);
                     b = edit_buffer_get_forward_offset (&edit->buffer, b, 1, 0);
                 }
             }
@@ -928,7 +1027,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, edit->start_line + row, row, start_column,
+                                         end_column, NULL);
                 }
             }
 
@@ -941,7 +1041,8 @@ render_edit_text (WEdit *edit, long start_row, long start_column, long end_row, 
                 {
                     if (key_pending (edit))
                         return;
-                    edit_draw_this_line (edit, b, row, start_column, end_column);
+                    edit_draw_this_line (edit, b, edit->start_line + row, row, start_column,
+                                         end_column, NULL);
                 }
             }
         }
@@ -1059,14 +1160,43 @@ edit_scroll_screen_over_cursor (WEdit *edit)
         l_extreme = (l_extreme * (w->cols - 1)) / n;
         r_extreme = (r_extreme * (w->cols - 1)) / n;
     }
-    p = edit_get_col (edit) + edit->over_col;
+    if (edit_wrap_is_enabled (edit))
+    {
+        // no horizontal scrolling in soft wrap mode
+        edit->start_col = 0;
+
+        if (edit->buffer.curs_line < edit->start_line
+            || edit->buffer.curs_line > edit->start_line + w->lines)
+        {
+            /* The cursor is far away from the page: instead of counting the rows in between,
+             * start the page from the cursor row and scroll it back to the wanted position. */
+            edit_wrap_seg_t seg;
+            long target;
+            const gboolean above = edit->buffer.curs_line < edit->start_line;
+
+            edit->start_line = edit->buffer.curs_line;
+            edit->start_display = edit_buffer_get_current_bol (&edit->buffer);
+            edit->start_wrap_row =
+                edit_wrap_locate (edit, edit->start_display, edit->buffer.curs1, &seg, NULL);
+            edit->force |= REDRAW_PAGE;
+            edit->force &= (0xfff - REDRAW_CHAR_ONLY);
+
+            target = above ? t_extreme : w->lines - 1 - b_extreme;
+            edit_scroll_upward (edit, MAX (target, 0));
+        }
+    }
+    else
+    {
+        p = edit_get_col (edit) + edit->over_col;
+        edit_update_curs_row (edit);
+        outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
+        if (outby > 0)
+            edit_scroll_right (edit, outby);
+        outby = l_extreme - p - edit->start_col;
+        if (outby > 0)
+            edit_scroll_left (edit, outby);
+    }
     edit_update_curs_row (edit);
-    outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
-    if (outby > 0)
-        edit_scroll_right (edit, outby);
-    outby = l_extreme - p - edit->start_col;
-    if (outby > 0)
-        edit_scroll_left (edit, outby);
     p = edit->curs_row;
     outby = p - w->lines + 1 + b_extreme;
     if (outby > 0)

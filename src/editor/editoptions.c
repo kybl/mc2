@@ -94,6 +94,24 @@ edit_reset_over_col (void *data, void *user_data)
 /* --------------------------------------------------------------------------------------------- */
 /**
  * Callback for the iteration of objects in the 'editors' array.
+ * Reset display state after the soft wrap mode has been changed.
+ *
+ * @param data      probably WEdit object
+ * @param user_data unused
+ */
+
+static void
+edit_reset_wrap (void *data, void *user_data)
+{
+    (void) user_data;
+
+    if (edit_widget_is_editor (CONST_WIDGET (data)))
+        edit_wrap_reset (EDIT (data));
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Callback for the iteration of objects in the 'editors' array.
  * Reload syntax lighlighting in all editors.
  *
  * @param data      probably WEdit object
@@ -124,6 +142,7 @@ edit_options_dialog (WDialog *h)
     char *p, *q;
     int wrap_mode = 0;
     gboolean old_syntax_hl;
+    gboolean old_soft_wrap;
 
 #ifdef ENABLE_NLS
     static gboolean i18n_flag = FALSE;
@@ -144,6 +163,9 @@ edit_options_dialog (WDialog *h)
         wrap_mode = 2;
     else
         wrap_mode = 0;
+
+    old_syntax_hl = edit_options.syntax_highlighting;
+    old_soft_wrap = edit_options.soft_wrap;
 
     {
         quick_widget_t quick_widgets[] = {
@@ -182,6 +204,7 @@ edit_options_dialog (WDialog *h)
                     QUICK_CHECKBOX (_ ("Cursor be&yond end of line"),
                                     &edit_options.cursor_beyond_eol, NULL),
                     QUICK_CHECKBOX (_ ("&Group undo"), &edit_options.group_undo, NULL),
+                    QUICK_CHECKBOX (_ ("Soft &wrap long lines"), &edit_options.soft_wrap, NULL),
                     QUICK_LABELED_INPUT (_ ("Word wrap line length:"), input_label_left, wrap_length,
                                          "edit-word-wrap", &p, NULL, FALSE, FALSE, INPUT_COMPLETE_NONE),
                 QUICK_STOP_GROUPBOX,
@@ -205,8 +228,6 @@ edit_options_dialog (WDialog *h)
         if (quick_dialog (&qdlg) == B_CANCEL)
             return;
     }
-
-    old_syntax_hl = edit_options.syntax_highlighting;
 
     if (!edit_options.cursor_beyond_eol)
         g_list_foreach (GROUP (h)->widgets, edit_reset_over_col, NULL);
@@ -246,6 +267,9 @@ edit_options_dialog (WDialog *h)
     // Load or unload syntax rules if the option has changed
     if (edit_options.syntax_highlighting != old_syntax_hl)
         g_list_foreach (GROUP (h)->widgets, edit_reload_syntax, NULL);
+
+    if (edit_options.soft_wrap != old_soft_wrap)
+        g_list_foreach (GROUP (h)->widgets, edit_reset_wrap, NULL);
 }
 
 /* --------------------------------------------------------------------------------------------- */

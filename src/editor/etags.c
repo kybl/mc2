@@ -320,7 +320,7 @@ editcmd_dialog_select_definition_show (WEdit *edit, char *match_expr, GPtrArray 
     // calculate the dialog metrics
     def_dlg_h = def_hash->len + 2;
     def_dlg_w = COLS - 2;  // will be clarified later
-    start_x = w->x + edit->curs_col + edit->start_col + EDIT_TEXT_HORIZONTAL_OFFSET
+    start_x = w->x + edit_get_curs_screen_col (edit) + EDIT_TEXT_HORIZONTAL_OFFSET
         + (edit->fullscreen != 0 ? 0 : 1) + edit_options.line_state_width;
     start_y =
         w->y + edit->curs_row + EDIT_TEXT_VERTICAL_OFFSET + (edit->fullscreen != 0 ? 0 : 1) + 1;
@@ -385,7 +385,7 @@ editcmd_dialog_select_definition_show (WEdit *edit, char *match_expr, GPtrArray 
                 vpath = vfs_path_clone (edit->filename_vpath);
 
             edit_arg_assign (&edit_history_moveto[edit_stack_iterator], vpath,
-                             edit->start_line + edit->curs_row + 1);
+                             edit->buffer.curs_line + 1);
             edit_stack_iterator++;
             edit_arg_assign (&edit_history_moveto[edit_stack_iterator],
                              vfs_path_from_str ((char *) curr_def->fullpath), curr_def->line);

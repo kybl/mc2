@@ -503,6 +503,7 @@ static const global_keymap_ini_t default_editor_keymap[] = {
     { "ShowNumbers", "alt-n" },
     { "ShowTabTws", "alt-underline" },
     { "SyntaxOnOff", "ctrl-s" },
+    { "WrapMode", "alt-w" },
     { "Find", "alt-enter" },
     { "FilePrev", "alt-minus" },
     { "FileNext", "alt-plus" },

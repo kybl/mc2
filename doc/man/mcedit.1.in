@@ -569,6 +569,13 @@ Symbol to add to name of backup files. Default is "~".
 Show state line of editor. Currently it shows current line number (in the future
 it might show things like folding, breakpoints, etc.). M\-n toggles this option.
 .TP
+.I editor_soft_wrap
+Wrap long lines on the screen instead of scrolling horizontally.  This is a
+display\-only feature: the file content is not changed and the cursor moves
+by screen rows.  M\-w toggles this option, see also the
+.B Command
+menu.
+.TP
 .I editor_visible_spaces
 Toggle "show visible trailing spaces".  If editor_visible_spaces=1, they are shown
 as '.'

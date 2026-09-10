@@ -64,6 +64,7 @@
 
 #include "edit-impl.h"
 #include "editwidget.h"
+#include "editwrap.h"
 #include "editsearch.h"
 #include "etags.h"
 
@@ -891,6 +892,65 @@ edit_show_numbers_cmd (WDialog *h)
 {
     edit_options.line_state = !edit_options.line_state;
     edit_options.line_state_width = edit_options.line_state ? LINE_STATE_WIDTH : 0;
+    widget_draw (WIDGET (h));
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Reset display state of an editor window after the soft wrap mode has been changed.
+ *
+ * @param edit editor object
+ */
+
+void
+edit_wrap_reset (WEdit *edit)
+{
+    edit->start_col = 0;
+    edit->start_wrap_row = 0;
+    edit->over_col = 0;
+    // remembered column has different meaning in wrap and non-wrap modes
+    if (edit_wrap_is_enabled (edit))
+    {
+        edit->prev_col = edit_wrap_cursor_cell (edit);
+        edit->prev_col_wrap_width = edit_wrap_width (edit);
+    }
+    else
+    {
+        edit_update_curs_col (edit);
+        edit->prev_col = edit->curs_col;
+    }
+    edit->force |= REDRAW_COMPLETELY;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Callback for the iteration of objects in the 'editors' array.
+ *
+ * @param data      probably WEdit object
+ * @param user_data unused
+ */
+
+static void
+edit_wrap_reset_cb (void *data, void *user_data)
+{
+    (void) user_data;
+
+    if (edit_widget_is_editor (CONST_WIDGET (data)))
+        edit_wrap_reset (EDIT (data));
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
+ * Toggle soft line wrapping in all editor windows.
+ *
+ * @param h root widget for all windows
+ */
+
+void
+edit_wrap_mode_cmd (WDialog *h)
+{
+    edit_options.soft_wrap = !edit_options.soft_wrap;
+    g_list_foreach (GROUP (h)->widgets, edit_wrap_reset_cb, NULL);
     widget_draw (WIDGET (h));
 }
 

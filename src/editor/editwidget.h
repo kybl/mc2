@@ -105,6 +105,9 @@ struct WEdit
     long prev_col;                    /* recent column position of the cursor - used when moving
                                          up or down past lines that are shorter than the current line */
     long start_line;                  // line number of the top of the page
+    long start_wrap_row;              /* soft wrap mode: number of screen rows of the top line
+                                         hidden above the top of the page */
+    long prev_col_wrap_width;         // soft wrap mode: wrap width at which prev_col was computed
 
     // file info
     off_t mark1;          // position of highlight start

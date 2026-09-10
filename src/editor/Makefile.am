@@ -10,6 +10,7 @@ libedit_la_SOURCES = \
 	bookmark.c \
 	edit-impl.h \
 	edit.c edit.h \
+	editwrap.c editwrap.h \
 	editcomplete.c editcomplete.h \
 	editbuffer.c editbuffer.h \
 	editcmd.c \

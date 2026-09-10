@@ -61,6 +61,7 @@
 
 #include "edit-impl.h"
 #include "editwidget.h"
+#include "editwrap.h"
 #include "editmacros.h"  // edit_execute_macro()
 #ifdef HAVE_ASPELL
 #include "spell.h"
@@ -468,6 +469,9 @@ edit_dialog_command_execute (WDialog *h, long command)
     case CK_ShowNumbers:
         edit_show_numbers_cmd (h);
         break;
+    case CK_WrapMode:
+        edit_wrap_mode_cmd (h);
+        break;
     case CK_Refresh:
         edit_refresh_cmd ();
         break;
@@ -714,7 +718,9 @@ edit_update_cursor (WEdit *edit, const mouse_event_t *event)
     if (event->msg == MSG_MOUSE_DOWN || event->msg == MSG_MOUSE_UP)
         edit_push_key_press (edit);
 
-    if (!edit_options.cursor_beyond_eol)
+    if (edit_wrap_is_enabled (edit))
+        edit_wrap_update_cursor (edit, x - edit_options.line_state_width, y);
+    else if (!edit_options.cursor_beyond_eol)
         edit->prev_col = x - edit->start_col - edit_options.line_state_width;
     else
     {
@@ -735,12 +741,15 @@ edit_update_cursor (WEdit *edit, const mouse_event_t *event)
         }
     }
 
-    if (y > edit->curs_row)
-        edit_move_down (edit, y - edit->curs_row, FALSE);
-    else if (y < edit->curs_row)
-        edit_move_up (edit, edit->curs_row - y, FALSE);
-    else
-        edit_move_to_prev_col (edit, edit_buffer_get_current_bol (&edit->buffer));
+    if (!edit_wrap_is_enabled (edit))
+    {
+        if (y > edit->curs_row)
+            edit_move_down (edit, y - edit->curs_row, FALSE);
+        else if (y < edit->curs_row)
+            edit_move_up (edit, edit->curs_row - y, FALSE);
+        else
+            edit_move_to_prev_col (edit, edit_buffer_get_current_bol (&edit->buffer));
+    }
 
     if (event->msg == MSG_MOUSE_CLICK)
     {
@@ -986,8 +995,11 @@ edit_callback (Widget *w, Widget *sender, widget_msg_t msg, int parm, void *data
         int y, x;
 
         y = (e->fullscreen != 0 ? 0 : 1) + EDIT_TEXT_VERTICAL_OFFSET + e->curs_row;
-        x = (e->fullscreen != 0 ? 0 : 1) + EDIT_TEXT_HORIZONTAL_OFFSET
-            + edit_options.line_state_width + e->curs_col + e->start_col + e->over_col;
+        x = edit_get_curs_screen_col (e) + e->over_col;
+        if (edit_wrap_is_enabled (e))
+            x = CLAMP (x, 0, edit_wrap_width (e) - 1);
+        x += (e->fullscreen != 0 ? 0 : 1) + EDIT_TEXT_HORIZONTAL_OFFSET
+            + edit_options.line_state_width;
 
         widget_gotoyx (w, y, x);
         return MSG_HANDLED;
