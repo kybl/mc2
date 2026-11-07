@@ -182,6 +182,27 @@ edit_wrap_width (const WEdit *edit)
 
 /* --------------------------------------------------------------------------------------------- */
 /**
+ * Get the number of screen rows available for the text.
+ *
+ * @param edit editor object
+ *
+ * @return height of the text area, at least 1
+ */
+
+long
+edit_wrap_text_lines (const WEdit *edit)
+{
+    long lines;
+
+    lines = CONST_WIDGET (edit)->rect.lines - EDIT_TEXT_VERTICAL_OFFSET;
+    if (edit->fullscreen == 0)
+        lines -= 2;  // frame
+
+    return MAX (lines, 1);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/**
  * Compute the segment (screen row) starting at the given offset.
  *
  * @param edit  editor object

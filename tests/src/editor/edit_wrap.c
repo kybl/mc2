@@ -25,6 +25,7 @@
 #include "tests/mctest.h"
 
 #include "lib/charsets.h"
+#include "lib/keybind.h"  // CK_*
 #include "src/selcodepage.h"
 
 #include "src/editor/editwidget.h"
@@ -558,6 +559,193 @@ END_TEST
 
 /* --------------------------------------------------------------------------------------------- */
 
+static const struct test_scroll_text_area_ds
+{
+    int fullscreen;
+    int line_state_width;
+    int cols;
+    int lines;
+} test_scroll_text_area_ds[] = {
+    { 1, 3, WRAP_WIDTH + 3, 8 },      // 0. line numbers
+    { 0, 0, WRAP_WIDTH + 2, 8 + 2 },  // 1. framed window
+    { 0, 3, WRAP_WIDTH + 5, 8 + 2 },  // 2. both
+};
+
+/* @Test(dataSource = "test_scroll_text_area_ds") */
+START_PARAMETRIZED_TEST (test_scroll_text_area, test_scroll_text_area_ds)
+{
+    // given: the text area is WRAP_WIDTH x 8 in all cases; every line fits into one row
+    // (edit_scroll_screen_over_cursor() used to compute the rows with a narrower width)
+    test_load_text ("12345678\n12345678\n12345678\n12345678\n12345678\n12345678\n"
+                    "12345678\n12345678\n12345678\n12345678\n12345678\n12345678\n");
+    test_edit->fullscreen = data->fullscreen;
+    edit_options.line_state_width = data->line_state_width;
+    WIDGET (test_edit)->rect.cols = data->cols;
+    WIDGET (test_edit)->rect.lines = data->lines;
+    ck_assert_int_eq (edit_wrap_width (test_edit), WRAP_WIDTH);
+    ck_assert_int_eq (edit_wrap_text_lines (test_edit), 8);
+
+    // when: the cursor is on line 9, below the page
+    edit_cursor_move (test_edit, 9 * 9);
+    edit_scroll_screen_over_cursor (test_edit);
+
+    // then: the page is scrolled by 2 rows and the cursor is on the last row
+    ck_assert_int_eq (test_edit->start_line, 2);
+    ck_assert_int_eq (test_edit->start_wrap_row, 0);
+    ck_assert_int_eq (test_edit->curs_row, 7);
+
+    edit_options.line_state_width = 0;
+}
+END_PARAMETRIZED_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_start_in_middle_of_line)
+{
+    // given: line 0 has 2 rows: [0123456789] [abcde]
+    test_load_text ("0123456789abcde\ntop\nmore\n");
+
+    // when: the top of the page points to the second row, but not to the beginning of a line
+    test_edit->start_display = 10;
+    test_edit->start_line = 0;
+    test_edit->start_wrap_row = 0;
+    edit_cursor_move (test_edit, 12);
+    edit_update_curs_row (test_edit);
+
+    // then: it is normalized to the beginning of the line + hidden rows
+    ck_assert_int_eq (test_edit->start_display, 0);
+    ck_assert_int_eq (test_edit->start_wrap_row, 1);
+    ck_assert_int_eq (test_edit->curs_row, 0);
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_backspace_at_top_line)
+{
+    // given: line 1 ("top") is the top line of the page and the cursor is at its beginning
+    test_load_text ("0123456789abcde\ntop\nmore\n");
+    test_edit->start_display = 16;
+    test_edit->start_line = 1;
+    test_edit->start_wrap_row = 0;
+    edit_cursor_move (test_edit, 16);
+    edit_update_curs_row (test_edit);
+    ck_assert_int_eq (test_edit->curs_row, 0);
+
+    // when: BackSpace joins it with the line above: [0123456789] [abcdetop]
+    edit_backspace (test_edit, FALSE);
+    edit_scroll_screen_over_cursor (test_edit);
+
+    // then: the joined text stays on top, the page starts at the second row of line 0
+    ck_assert_int_eq (test_edit->buffer.curs1, 15);
+    ck_assert_int_eq (test_edit->start_line, 0);
+    ck_assert_int_eq (test_edit->start_display, 0);
+    ck_assert_int_eq (test_edit->start_wrap_row, 1);
+    ck_assert_int_eq (test_edit->curs_row, 0);
+    ck_assert_int_eq (edit_wrap_cursor_cell (test_edit), 5);
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_cursor_beyond_eol_stays_in_row)
+{
+    int i;
+
+    // given
+    edit_options.cursor_beyond_eol = TRUE;
+    test_load_text ("abc\n");
+    edit_cursor_move (test_edit, 3);
+
+    // when: Right far beyond the end of the line
+    for (i = 0; i < 20; i++)
+        edit_execute_cmd (test_edit, CK_Right, -1);
+
+    // then: the cursor stops at the last column of the row
+    ck_assert_int_eq (edit_wrap_cursor_cell (test_edit) + test_edit->over_col, WRAP_WIDTH - 1);
+
+    // when: a character is typed
+    edit_execute_cmd (test_edit, -1, 'Z');
+
+    // then: it is inserted where the cursor was shown
+    ck_assert_int_eq (test_edit->buffer.size, 11);
+    ck_assert_int_eq (edit_buffer_get_byte (&test_edit->buffer, WRAP_WIDTH - 1), 'Z');
+
+    edit_options.cursor_beyond_eol = FALSE;
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_line_moves_keep_utf8_boundary)
+{
+    // given: UTF-8 text, the first line starts with a wide char (cells 0-1)
+    mc_global.utf8_display = TRUE;
+    test_edit->utf8 = TRUE;
+    test_load_text ("\xe4\xb8\xad\xe6\x96\x87x\nabc\nabc\n");  // "中文x\nabc\nabc\n"
+
+    // when: cursor on 'b' of line 1 (screen column 1), Ctrl-Home
+    edit_cursor_move (test_edit, 9);
+    test_edit->prev_col = 1;
+    edit_execute_cmd (test_edit, CK_Top, -1);
+
+    // then: the cursor is on the wide char, not inside its UTF-8 sequence
+    ck_assert_int_eq (test_edit->buffer.curs1, 0);
+
+    // when: from 'b' of line 2, go to line 0 (goto line)
+    edit_cursor_move (test_edit, 13 - test_edit->buffer.curs1);
+    test_edit->prev_col = 1;
+    edit_move_to_line (test_edit, 0);
+
+    // then
+    ck_assert_int_eq (test_edit->buffer.curs1, 0);
+
+    mc_global.utf8_display = FALSE;
+    test_edit->utf8 = FALSE;
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_far_cursor_row)
+{
+    int i;
+
+    // given: 100 short lines, the page starts at line 50
+    for (i = 0; i < 100; i++)
+        test_load_text ("x\n");
+    edit_cursor_move (test_edit, -test_edit->buffer.curs1);
+    test_edit->start_line = 50;
+    test_edit->start_display = 100;
+    test_edit->start_wrap_row = 0;
+
+    // when: the cursor is far above the page
+    edit_update_curs_row (test_edit);
+    // then: the row is off the screen, above
+    ck_assert_int_lt (test_edit->curs_row, 0);
+
+    // when: the cursor is far below the page
+    edit_cursor_move (test_edit, 198);
+    edit_update_curs_row (test_edit);
+    // then: the row is off the screen, below
+    ck_assert_int_ge (test_edit->curs_row, 8);
+
+    // when: the page is scrolled to the cursor
+    edit_scroll_screen_over_cursor (test_edit);
+    // then: the cursor is on the last row
+    ck_assert_int_eq (test_edit->buffer.curs_line, 99);
+    ck_assert_int_eq (test_edit->curs_row, 7);
+    ck_assert_int_eq (test_edit->start_line, 99 - 7);
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
+
 int
 main (void)
 {
@@ -579,6 +767,12 @@ main (void)
     tcase_add_test (tc_core, test_curs_row_and_scroll);
     tcase_add_test (tc_core, test_move_display);
     tcase_add_test (tc_core, test_mouse_cursor);
+    mctest_add_parameterized_test (tc_core, test_scroll_text_area, test_scroll_text_area_ds);
+    tcase_add_test (tc_core, test_start_in_middle_of_line);
+    tcase_add_test (tc_core, test_backspace_at_top_line);
+    tcase_add_test (tc_core, test_cursor_beyond_eol_stays_in_row);
+    tcase_add_test (tc_core, test_line_moves_keep_utf8_boundary);
+    tcase_add_test (tc_core, test_far_cursor_row);
     // ***********************************
 
     return mctest_run_all (tc_core);

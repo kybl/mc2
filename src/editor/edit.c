@@ -130,6 +130,7 @@ static void edit_move_updown_lines (WEdit *edit, long lines, gboolean do_scroll,
                                     gboolean direction);
 static void edit_wrap_move_to_cell (WEdit *edit, const edit_wrap_seg_t *seg);
 static void edit_snap_to_half_tab (WEdit *edit);
+static void edit_cursor_to_line_col (WEdit *edit, off_t p);
 
 /*** file scope variables ************************************************************************/
 
@@ -844,8 +845,7 @@ edit_move_to_top (WEdit *edit)
 {
     if (edit->buffer.curs_line != 0)
     {
-        edit_cursor_move (edit, -edit->buffer.curs1);
-        edit_move_to_prev_col (edit, 0);
+        edit_cursor_to_line_col (edit, 0);
         edit->force |= REDRAW_PAGE;
         edit->search_start = 0;
         edit_update_curs_row (edit);
@@ -865,8 +865,12 @@ edit_move_to_bottom (WEdit *edit)
         edit->start_line = edit->buffer.lines;
         edit->start_wrap_row = 0;
         if (edit_wrap_is_enabled (edit))
+        {
             edit->start_wrap_row = edit_wrap_line_rows (edit, edit->start_display) - 1;
-        edit_scroll_upward (edit, WIDGET (edit)->rect.lines - 1);
+            edit_scroll_upward (edit, edit_wrap_text_lines (edit) - 1);
+        }
+        else
+            edit_scroll_upward (edit, WIDGET (edit)->rect.lines - 1);
         edit->force |= REDRAW_PAGE;
     }
 }
@@ -1076,7 +1080,12 @@ edit_right_char_move_cmd (WEdit *edit)
         c = edit_buffer_get_current_byte (&edit->buffer);
 
     if (edit_options.cursor_beyond_eol && c == '\n')
-        edit->over_col++;
+    {
+        // in soft wrap mode the cursor cannot go beyond the right edge of the row
+        if (!edit_wrap_is_enabled (edit)
+            || edit_wrap_cursor_cell (edit) + edit->over_col < edit_wrap_width (edit) - 1)
+            edit->over_col++;
+    }
     else
         edit_cursor_move (edit, char_length);
 }
@@ -1140,6 +1149,36 @@ edit_wrap_check_prev_col (WEdit *edit)
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/**
+ * Move the cursor to the line beginning at @p, to the remembered column (edit->prev_col).
+ *
+ * In soft wrap mode edit->prev_col is a screen column in a row: the cursor is put to that
+ * column of the first row of the line.
+ *
+ * @param edit editor object
+ * @param p    offset of the beginning of the target line
+ */
+
+static void
+edit_cursor_to_line_col (WEdit *edit, off_t p)
+{
+    if (edit_wrap_is_enabled (edit))
+    {
+        edit_wrap_seg_t seg;
+
+        edit_wrap_check_prev_col (edit);
+        edit_cursor_move (edit, p - edit->buffer.curs1);
+        edit_wrap_get_segment (edit, p, 0, edit_wrap_width (edit), &seg);
+        edit_wrap_move_to_cell (edit, &seg);
+    }
+    else
+    {
+        edit_cursor_move (edit, p - edit->buffer.curs1);
+        edit_move_to_prev_col (edit, p);
+    }
+}
+
+/* --------------------------------------------------------------------------------------------- */
 /** Up or down cursor moving by logical lines.
  direction = TRUE - move up
            = FALSE - move down
@@ -1169,8 +1208,7 @@ edit_move_updown_lines (WEdit *edit, long lines, gboolean do_scroll, gboolean di
     p = edit_buffer_get_current_bol (&edit->buffer);
     p = direction ? edit_buffer_get_backward_offset (&edit->buffer, p, lines)
                   : edit_buffer_get_forward_offset (&edit->buffer, p, lines, 0);
-    edit_cursor_move (edit, p - edit->buffer.curs1);
-    edit_move_to_prev_col (edit, p);
+    edit_cursor_to_line_col (edit, p);
 
     // search start of current multibyte char (like CJK)
     if (edit->buffer.curs1 > 0 && edit->buffer.curs1 + 1 < edit->buffer.size
@@ -3056,8 +3094,20 @@ edit_update_curs_row (WEdit *edit)
         edit_wrap_seg_t seg;
         off_t b;
         long l, rows;
+        const long far = edit_wrap_text_lines (edit) + 1;
 
         edit_wrap_clamp_start (edit);
+
+        /* Each line takes at least one row.  If the cursor is too many lines away from the top
+         * of the page, it is surely off the screen: do not count the rows of all lines in
+         * between (that could be the whole file), the line distance is enough to tell the
+         * direction.  edit_scroll_screen_over_cursor() handles this case itself. */
+        if (edit->buffer.curs_line > edit->start_line + far
+            || edit->buffer.curs_line < edit->start_line - far)
+        {
+            edit->curs_row = edit->buffer.curs_line - edit->start_line;
+            return;
+        }
 
         // rows between the top line and the cursor line
         if (edit->buffer.curs_line >= edit->start_line)
@@ -3091,13 +3141,29 @@ edit_update_curs_row (WEdit *edit)
 
 /* --------------------------------------------------------------------------------------------- */
 /**
- * Make sure that the number of hidden rows of the top line is valid (soft wrap mode).
- * The line may have been changed so that it has fewer rows than before.
+ * Make sure that the top of the page is valid (soft wrap mode).
+ *
+ * The top line may have been changed so that it has fewer rows than before.  The top of the page
+ * may also point into the middle of a line: edit_backspace() and edit_delete() just shift
+ * edit->start_display when the newline before it is deleted (e.g. BackSpace at the beginning of
+ * the top line joins it with the line above).  In that case keep the same text on the top:
+ * start the page at the row of the joined line that contains it.
  */
 
 void
 edit_wrap_clamp_start (WEdit *edit)
 {
+    off_t bol;
+
+    bol = edit_buffer_get_bol (&edit->buffer, edit->start_display);
+    if (bol != edit->start_display && edit->start_display <= edit->buffer.size)
+    {
+        edit_wrap_seg_t seg;
+
+        edit->start_wrap_row += edit_wrap_locate (edit, bol, edit->start_display, &seg, NULL);
+        edit->start_display = bol;
+    }
+
     if (edit->start_wrap_row > 0)
     {
         long rows;
@@ -3261,7 +3327,7 @@ edit_scroll_downward (WEdit *edit, long i)
 
     if (edit_wrap_is_enabled (edit))
     {
-        const long h = WIDGET (edit)->rect.lines;
+        const long h = edit_wrap_text_lines (edit);
 
         if (i > 0)
         {
@@ -3560,7 +3626,7 @@ edit_move_display (WEdit *e, long line)
         edit_wrap_set_start (e, line, b);
         // scroll back if there are not enough rows below the new top
         edit_scroll_upward (
-            e, WIDGET (e)->rect.lines - edit_wrap_rows_below (e, WIDGET (e)->rect.lines));
+            e, edit_wrap_text_lines (e) - edit_wrap_rows_below (e, edit_wrap_text_lines (e)));
         return;
     }
 

@@ -34,6 +34,7 @@ typedef struct
 
 gboolean edit_wrap_is_enabled (const WEdit *edit);
 long edit_wrap_width (const WEdit *edit);
+long edit_wrap_text_lines (const WEdit *edit);
 
 void edit_wrap_get_segment (const WEdit *edit, off_t start, long col, long width,
                             edit_wrap_seg_t *seg);

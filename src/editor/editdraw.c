@@ -1085,6 +1085,68 @@ edit_render (WEdit *edit, int page, int row_start, int col_start, int row_end, i
 }
 
 /* --------------------------------------------------------------------------------------------- */
+/**
+ * Scroll the text so that the cursor is on the screen (soft wrap mode).
+ *
+ * @param edit editor object
+ */
+
+static void
+edit_wrap_scroll_screen_over_cursor (WEdit *edit)
+{
+    const long lines = edit_wrap_text_lines (edit);
+    long b_extreme = EDIT_BOTTOM_EXTREME;
+    long t_extreme = EDIT_TOP_EXTREME;
+    long outby;
+
+    // no horizontal scrolling in soft wrap mode
+    edit->start_col = 0;
+
+    if (edit->found_len != 0)
+    {
+        b_extreme = MAX (lines / 4, b_extreme);
+        t_extreme = MAX (lines / 4, t_extreme);
+    }
+    if (b_extreme + t_extreme + 1 > lines)
+    {
+        long n;
+
+        n = b_extreme + t_extreme;
+        if (n == 0)
+            n = 1;
+        b_extreme = (b_extreme * (lines - 1)) / n;
+        t_extreme = (t_extreme * (lines - 1)) / n;
+    }
+
+    if (edit->buffer.curs_line < edit->start_line
+        || edit->buffer.curs_line > edit->start_line + lines)
+    {
+        /* The cursor is far away from the page: instead of counting the rows in between,
+         * start the page from the cursor row and scroll it back to the wanted position. */
+        edit_wrap_seg_t seg;
+        const gboolean above = edit->buffer.curs_line < edit->start_line;
+
+        edit->start_line = edit->buffer.curs_line;
+        edit->start_display = edit_buffer_get_current_bol (&edit->buffer);
+        edit->start_wrap_row =
+            edit_wrap_locate (edit, edit->start_display, edit->buffer.curs1, &seg, NULL);
+        edit->force |= REDRAW_PAGE;
+        edit->force &= (0xfff - REDRAW_CHAR_ONLY);
+
+        edit_scroll_upward (edit, MAX (above ? t_extreme : lines - 1 - b_extreme, 0));
+    }
+
+    edit_update_curs_row (edit);
+    outby = edit->curs_row - lines + 1 + b_extreme;
+    if (outby > 0)
+        edit_scroll_downward (edit, outby);
+    outby = t_extreme - edit->curs_row;
+    if (outby > 0)
+        edit_scroll_upward (edit, outby);
+    edit_update_curs_row (edit);
+}
+
+/* --------------------------------------------------------------------------------------------- */
 /*** public functions ****************************************************************************/
 /* --------------------------------------------------------------------------------------------- */
 
@@ -1125,6 +1187,14 @@ edit_scroll_screen_over_cursor (WEdit *edit)
     if (w->lines <= 0 || w->cols <= 0)
         return;
 
+    /* The code below temporarily shrinks the widget to the text area; the soft wrap code
+     * computes the text area from the widget itself, so it must run on the unchanged widget. */
+    if (edit_wrap_is_enabled (edit))
+    {
+        edit_wrap_scroll_screen_over_cursor (edit);
+        return;
+    }
+
     rect_resize (w, -EDIT_TEXT_VERTICAL_OFFSET,
                  -(EDIT_TEXT_HORIZONTAL_OFFSET + edit_options.line_state_width));
 
@@ -1160,43 +1230,14 @@ edit_scroll_screen_over_cursor (WEdit *edit)
         l_extreme = (l_extreme * (w->cols - 1)) / n;
         r_extreme = (r_extreme * (w->cols - 1)) / n;
     }
-    if (edit_wrap_is_enabled (edit))
-    {
-        // no horizontal scrolling in soft wrap mode
-        edit->start_col = 0;
-
-        if (edit->buffer.curs_line < edit->start_line
-            || edit->buffer.curs_line > edit->start_line + w->lines)
-        {
-            /* The cursor is far away from the page: instead of counting the rows in between,
-             * start the page from the cursor row and scroll it back to the wanted position. */
-            edit_wrap_seg_t seg;
-            long target;
-            const gboolean above = edit->buffer.curs_line < edit->start_line;
-
-            edit->start_line = edit->buffer.curs_line;
-            edit->start_display = edit_buffer_get_current_bol (&edit->buffer);
-            edit->start_wrap_row =
-                edit_wrap_locate (edit, edit->start_display, edit->buffer.curs1, &seg, NULL);
-            edit->force |= REDRAW_PAGE;
-            edit->force &= (0xfff - REDRAW_CHAR_ONLY);
-
-            target = above ? t_extreme : w->lines - 1 - b_extreme;
-            edit_scroll_upward (edit, MAX (target, 0));
-        }
-    }
-    else
-    {
-        p = edit_get_col (edit) + edit->over_col;
-        edit_update_curs_row (edit);
-        outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
-        if (outby > 0)
-            edit_scroll_right (edit, outby);
-        outby = l_extreme - p - edit->start_col;
-        if (outby > 0)
-            edit_scroll_left (edit, outby);
-    }
+    p = edit_get_col (edit) + edit->over_col;
     edit_update_curs_row (edit);
+    outby = p + edit->start_col - w->cols + 1 + (r_extreme + edit->found_len);
+    if (outby > 0)
+        edit_scroll_right (edit, outby);
+    outby = l_extreme - p - edit->start_col;
+    if (outby > 0)
+        edit_scroll_left (edit, outby);
     p = edit->curs_row;
     outby = p - w->lines + 1 + b_extreme;
     if (outby > 0)
