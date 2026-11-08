@@ -745,6 +745,326 @@ START_TEST (test_far_cursor_row)
 END_TEST
 
 /* --------------------------------------------------------------------------------------------- */
+/* Randomized property test                                                                      */
+/* --------------------------------------------------------------------------------------------- */
+
+static unsigned long prop_seed;
+
+static unsigned long
+prop_rand (void)
+{
+    prop_seed = prop_seed * 6364136223846793005UL + 1442695040888963407UL;
+    return (prop_seed >> 33);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+static long
+prop_lines_before (off_t pos)
+{
+    long n = 0;
+    off_t i;
+
+    for (i = 0; i < pos; i++)
+        if (edit_buffer_get_byte (&test_edit->buffer, i) == '\n')
+            n++;
+    return n;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** global screen row of the first row of line @line */
+
+static long
+prop_line_first_row (long line)
+{
+    off_t b = 0;
+    long l, rows = 0;
+
+    for (l = 0; l < line; l++)
+    {
+        rows += edit_wrap_line_rows (test_edit, b);
+        b = edit_buffer_get_forward_offset (&test_edit->buffer, b, 1, 0);
+    }
+    return rows;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** global screen row of the byte offset @pos */
+
+static long
+prop_global_row (off_t pos)
+{
+    edit_wrap_seg_t seg;
+    const off_t bol = edit_buffer_get_bol (&test_edit->buffer, pos);
+
+    return prop_line_first_row (prop_lines_before (pos))
+        + edit_wrap_locate (test_edit, bol, pos, &seg, NULL);
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+static long
+prop_total_rows (void)
+{
+    return prop_line_first_row (test_edit->buffer.lines)
+        + edit_wrap_line_rows (test_edit,
+                               edit_buffer_get_bol (&test_edit->buffer, test_edit->buffer.size));
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+static long
+prop_top_row (void)
+{
+    return prop_line_first_row (test_edit->start_line) + test_edit->start_wrap_row;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+/** byte offsets where characters start (with the UTF-8 decoding the editor uses) */
+
+static gboolean
+prop_is_char_start (off_t pos)
+{
+    const int c = edit_buffer_get_byte (&test_edit->buffer, pos);
+
+    return !test_edit->utf8 || c < 0x80 || c >= 0xC0;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+static void
+prop_set_cursor (off_t pos)
+{
+    edit_cursor_move (test_edit, pos - test_edit->buffer.curs1);
+    test_edit->prev_col = edit_wrap_cursor_cell (test_edit);
+    test_edit->prev_col_wrap_width = edit_wrap_width (test_edit);
+    test_edit->over_col = 0;
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+static void
+prop_set_top_row (long row)
+{
+    off_t b = 0;
+    long l = 0;
+
+    while (TRUE)
+    {
+        const long n = edit_wrap_line_rows (test_edit, b);
+
+        if (row < n || l >= test_edit->buffer.lines)
+        {
+            test_edit->start_line = l;
+            test_edit->start_display = b;
+            test_edit->start_wrap_row = MIN (row, n - 1);
+            return;
+        }
+        row -= n;
+        b = edit_buffer_get_forward_offset (&test_edit->buffer, b, 1, 0);
+        l++;
+    }
+}
+
+/* --------------------------------------------------------------------------------------------- */
+
+/* @Test */
+START_TEST (test_random_properties)
+{
+    static const char *tokens[] = {
+        "a",
+        "b",
+        "c",
+        " ",
+        " ",
+        "\t",
+        "\x01",
+        "\n",
+        "\n",
+        "xyz",
+        "\xc5\xbe",          // z with caron: 2 bytes, 1 column
+        "\xe4\xb8\xad",      // CJK: 3 bytes, 2 columns
+        "\xf0\x9f\x98\x80",  // emoji: 4 bytes, 2 columns
+    };
+    int iter;
+
+    prop_seed = 20261108;
+
+    for (iter = 0; iter < 250; iter++)
+    {
+        GString *text;
+        const gboolean utf8 = (iter % 3) != 0;
+        long W, H, ntok, i, total;
+        off_t bol, pos;
+
+        // given: a random document, width and height
+        text = g_string_new ("");
+        ntok = prop_rand () % 120;
+        for (i = 0; i < ntok; i++)
+            g_string_append (text, tokens[prop_rand () % G_N_ELEMENTS (tokens)]);
+
+        edit_clean (test_edit);
+        {
+            WRect r;
+
+            W = 1 + prop_rand () % 24;
+            H = 1 + prop_rand () % 8;
+            rect_init (&r, 0, 0, H, W);
+            test_edit = edit_init (test_edit, &r, NULL);
+            WIDGET (test_edit)->rect = r;
+            test_edit->fullscreen = 1;  // edit_clean() resets it
+        }
+        mc_global.utf8_display = utf8;
+        test_edit->utf8 = utf8;
+        test_load_text (text->str);
+        g_string_free (text, TRUE);
+        ck_assert_int_eq (edit_wrap_width (test_edit), W);
+
+        // then: segments cover each line contiguously, every char start roundtrips
+        bol = 0;
+        while (TRUE)
+        {
+            edit_wrap_seg_t seg;
+            const off_t eol = edit_buffer_get_eol (&test_edit->buffer, bol);
+            off_t expect_start = bol;
+            long nseg = 0;
+
+            edit_wrap_get_segment (test_edit, bol, 0, W, &seg);
+            while (TRUE)
+            {
+                long last_cell = -1;
+
+                ck_assert_int_eq (seg.start, expect_start);
+                ck_assert (seg.width >= 0 && seg.width <= W);
+                ck_assert (seg.last || seg.next > seg.start);
+                for (pos = seg.start; pos < seg.next || (seg.last && pos == eol); pos++)
+                {
+                    edit_wrap_seg_t s2;
+                    long cell, cell2;
+
+                    if (pos < eol && !prop_is_char_start (pos))
+                        continue;
+                    ck_assert_int_eq (edit_wrap_locate (test_edit, bol, pos, &s2, &cell), nseg);
+                    ck_assert_int_eq (s2.start, seg.start);
+                    ck_assert (cell > last_cell);
+                    last_cell = cell;
+                    ck_assert_int_eq (edit_wrap_cell_to_offset (test_edit, &seg, cell, &cell2),
+                                      pos);
+                    ck_assert_int_eq (cell2, cell);
+                    if (pos == eol)
+                        ck_assert_int_eq (cell, seg.width);
+                }
+                nseg++;
+                expect_start = seg.next;
+                if (!edit_wrap_next_segment (test_edit, W, &seg))
+                    break;
+            }
+            ck_assert_int_eq (expect_start, eol);
+            ck_assert_int_eq (edit_wrap_line_rows (test_edit, bol), nseg);
+            if (eol >= test_edit->buffer.size)
+                break;
+            bol = eol + 1;
+        }
+
+        total = prop_total_rows ();
+
+        // then: Down/Up move by exactly one global row, the cell does not exceed prev_col
+        for (i = 0; i < 6; i++)
+        {
+            long g, cell, k;
+
+            do
+                pos = prop_rand () % (test_edit->buffer.size + 1);
+            while (pos < test_edit->buffer.size && !prop_is_char_start (pos));
+            prop_set_cursor (pos);
+            test_edit->prev_col = prop_rand () % (W + 2);
+            g = prop_global_row (pos);
+
+            for (k = 0; k < 3; k++)
+            {
+                const gboolean down = (prop_rand () % 2) == 0;
+                const long want = down ? MIN (g + 1, total - 1) : MAX (g - 1, 0);
+
+                if (down)
+                    edit_move_down (test_edit, 1, FALSE);
+                else
+                    edit_move_up (test_edit, 1, FALSE);
+                if (want != g)
+                {
+                    ck_assert_int_eq (prop_global_row (test_edit->buffer.curs1), want);
+                    cell = edit_wrap_cursor_cell (test_edit);
+                    ck_assert (cell <= test_edit->prev_col || cell == 0);
+                    ck_assert (prop_is_char_start (test_edit->buffer.curs1)
+                               || test_edit->buffer.curs1 >= test_edit->buffer.size);
+                }
+                g = prop_global_row (test_edit->buffer.curs1);
+            }
+        }
+
+        // then: scrolling moves the top of the page by the exact (clamped) number of rows
+        for (i = 0; i < 4; i++)
+        {
+            const long max_top = MAX (total - H, 0);
+            const long top0 = prop_rand () % (max_top + 1);
+            const long k = prop_rand () % (H + 3);
+
+            prop_set_top_row (top0);
+            ck_assert_int_eq (prop_top_row (), top0);
+            edit_scroll_downward (test_edit, k);
+            ck_assert_int_eq (prop_top_row (), top0 + MAX (0, MIN (k, total - top0 - H)));
+            prop_set_top_row (top0);
+            edit_scroll_upward (test_edit, k);
+            ck_assert_int_eq (prop_top_row (), MAX (top0 - k, 0));
+        }
+
+        // then: the cursor is on the screen after edit_scroll_screen_over_cursor(); the page
+        // does not move if the cursor already was on the screen
+        for (i = 0; i < 4; i++)
+        {
+            const long top0 = prop_rand () % total;
+            long g, top;
+
+            do
+                pos = prop_rand () % (test_edit->buffer.size + 1);
+            while (pos < test_edit->buffer.size && !prop_is_char_start (pos));
+            prop_set_top_row (top0);
+            prop_set_cursor (pos);
+            g = prop_global_row (pos);
+            edit_scroll_screen_over_cursor (test_edit);
+            top = prop_top_row ();
+            ck_assert_int_eq (test_edit->curs_row, g - top);
+            ck_assert (test_edit->curs_row >= 0 && test_edit->curs_row < H);
+            if (g >= top0 && g < top0 + H)
+                ck_assert_int_eq (top, top0);
+            ck_assert_int_eq (test_edit->start_line, prop_lines_before (test_edit->start_display));
+            ck_assert_int_eq (edit_buffer_get_bol (&test_edit->buffer, test_edit->start_display),
+                              test_edit->start_display);
+        }
+
+        // then: a top of the page in the middle of a line is normalized to the row containing it
+        if (test_edit->buffer.size > 0)
+        {
+            const off_t mid = prop_rand () % test_edit->buffer.size;
+
+            if (prop_is_char_start (mid))
+            {
+                test_edit->start_display = mid;
+                test_edit->start_line = prop_lines_before (mid);
+                test_edit->start_wrap_row = 0;
+                prop_set_cursor (mid);
+                edit_update_curs_row (test_edit);
+                ck_assert_int_eq (prop_top_row (), prop_global_row (mid));
+                ck_assert_int_eq (test_edit->curs_row, 0);
+            }
+        }
+    }
+
+    mc_global.utf8_display = FALSE;
+    test_edit->utf8 = FALSE;
+}
+END_TEST
+
+/* --------------------------------------------------------------------------------------------- */
 
 int
 main (void)
@@ -773,6 +1093,7 @@ main (void)
     tcase_add_test (tc_core, test_cursor_beyond_eol_stays_in_row);
     tcase_add_test (tc_core, test_line_moves_keep_utf8_boundary);
     tcase_add_test (tc_core, test_far_cursor_row);
+    tcase_add_test (tc_core, test_random_properties);
     // ***********************************
 
     return mctest_run_all (tc_core);

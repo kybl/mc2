@@ -204,7 +204,7 @@ edit_options_dialog (WDialog *h)
                     QUICK_CHECKBOX (_ ("Cursor be&yond end of line"),
                                     &edit_options.cursor_beyond_eol, NULL),
                     QUICK_CHECKBOX (_ ("&Group undo"), &edit_options.group_undo, NULL),
-                    QUICK_CHECKBOX (_ ("Soft &wrap long lines"), &edit_options.soft_wrap, NULL),
+                    QUICK_CHECKBOX (_ ("Soft wrap &long lines"), &edit_options.soft_wrap, NULL),
                     QUICK_LABELED_INPUT (_ ("Word wrap line length:"), input_label_left, wrap_length,
                                          "edit-word-wrap", &p, NULL, FALSE, FALSE, INPUT_COMPLETE_NONE),
                 QUICK_STOP_GROUPBOX,
